@@ -1,0 +1,19 @@
+# A simple program to calculate the area of a rectangle.
+
+say "--- Rectangle Area Calculator ---"
+
+set length to ask "Enter the length:"
+set width to ask "Enter the width:"
+
+# A more advanced version would have math operators.
+# For v1.0, we'll just show the inputs.
+say "You entered a length of", length, "and a width of", width
+say "Mewar v2.0 will be able to calculate the area!"
+
+
+#####OutPut#######
+--- Rectangle Area Calculator ---
+Enter the length: **10**
+Enter the width: **5**
+You entered a length of 10 and a width of 5
+Mewar v2.0 will be able to calculate the area!
