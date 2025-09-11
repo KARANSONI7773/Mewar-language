@@ -1,206 +1,158 @@
-# The Veer Interpreter for the Mewar Language
-# Version 1.1 - File Runner
-#
-# This version is updated to read and execute Mewar code from a file.
-
 import sys
-import shlex
+import re
 
-# --- 1. Token Types ---
-TT_KEYWORD    = 'KEYWORD'
-TT_IDENTIFIER = 'IDENTIFIER'
-TT_NUMBER     = 'NUMBER'
-TT_STRING     = 'STRING'
-
-# Define the keywords of our language
-MEWAR_KEYWORDS = [
-    'set', 'to', 'say'
-]
-
-# --- 2. AST (Abstract Syntax Tree) Nodes ---
-# These classes define the structure of our parsed code.
-
-class SetVariableNode:
-    def __init__(self, identifier_token, value_node):
-        self.identifier_token = identifier_token
-        self.value_node = value_node
-    def __repr__(self):
-        return f'(Set:{self.identifier_token["value"]}={self.value_node})'
-
-class NumberNode:
-    def __init__(self, token):
-        self.token = token
-    def __repr__(self):
-        return f'{self.token["value"]}'
-
-class StringNode:
-    def __init__(self, token):
-        self.token = token
-    def __repr__(self):
-        return f'"{self.token["value"]}"'
-
-class VariableAccessNode:
-    def __init__(self, token):
-        self.token = token
-    def __repr__(self):
-        return f'(Get:{self.token["value"]})'
-
-class SayNode:
-    def __init__(self, nodes_to_say):
-        self.nodes_to_say = nodes_to_say
-    def __repr__(self):
-        return f'(Say:{self.nodes_to_say})'
-
-# --- 3. Lexer ---
-# Breaks the raw code into a list of classified tokens.
-
-class Lexer:
-    def __init__(self, code_line):
-        self.code_line = code_line
-
-    def run(self):
-        # shlex is great for splitting lines while respecting quoted strings
-        words = shlex.split(self.code_line)
-        tokens = []
-        for word in words:
-            if word in MEWAR_KEYWORDS:
-                tokens.append({'type': TT_KEYWORD, 'value': word})
-            elif word.isdigit():
-                tokens.append({'type': TT_NUMBER, 'value': int(word)})
-            # A simple check for identifiers (variable names)
-            elif word.isidentifier():
-                tokens.append({'type': TT_IDENTIFIER, 'value': word})
-            else: # If it's none of the above, it's treated as a string value from shlex
-                tokens.append({'type': TT_STRING, 'value': word})
-        return tokens
-
-# --- 4. Parser ---
-# Takes tokens and builds a structured AST.
-
-class Parser:
-    def __init__(self, tokens):
-        self.tokens = tokens
-        self.token_index = -1
-        self.current_token = None
-        self.advance()
-
-    def advance(self):
-        self.token_index += 1
-        self.current_token = self.tokens[self.token_index] if self.token_index < len(self.tokens) else None
-
-    def parse(self):
-        if not self.current_token:
-            return None
-        
-        if self.current_token['type'] == TT_KEYWORD and self.current_token['value'] == 'set':
-            return self.parse_set_statement()
-        elif self.current_token['type'] == TT_KEYWORD and self.current_token['value'] == 'say':
-            return self.parse_say_statement()
-        
-        # If no known keyword is found, return None
-        return None
-
-    def parse_set_statement(self):
-        self.advance() # Move past 'set'
-        identifier = self.current_token
-        self.advance() # Move past IDENTIFIER
-        if self.current_token is None or self.current_token['value'] != 'to':
-            # Basic grammar check for the 'to' keyword
-            return None 
-        self.advance() # Move past 'to'
-        
-        value_node = None
-        if self.current_token['type'] == TT_NUMBER:
-            value_node = NumberNode(self.current_token)
-        elif self.current_token['type'] == TT_IDENTIFIER:
-            value_node = VariableAccessNode(self.current_token)
-        return SetVariableNode(identifier, value_node)
-
-    def parse_say_statement(self):
-        self.advance() # Move past 'say'
-        nodes = []
-        while self.current_token:
-            if self.current_token['type'] == TT_NUMBER:
-                nodes.append(NumberNode(self.current_token))
-            elif self.current_token['type'] == TT_STRING:
-                nodes.append(StringNode(self.current_token))
-            elif self.current_token['type'] == TT_IDENTIFIER:
-                nodes.append(VariableAccessNode(self.current_token))
-            self.advance()
-        return SayNode(nodes)
-
-# --- 5. Symbol Table ---
-# Manages the memory of our program (stores variables).
-
-class SymbolTable:
+class VeerInterpreter:
     def __init__(self):
-        self.symbols = {}
-    def get(self, name):
-        return self.symbols.get(name, 0) # Return 0 if not found
-    def set(self, name, value):
-        self.symbols[name] = value
+        self.variables = {}
+        self.program_counter = 0
+        self.block_stack = []
+        self.functions = {}
+        self.call_stack = []
 
-# --- 6. Interpreter ---
-# "Walks" the AST and executes the commands.
+    def run(self, code):
+        lines = code.split('\n')
+        self.pre_scan_for_functions(lines)
 
-class Interpreter:
-    def visit(self, node, symbol_table):
-        method_name = f'visit_{type(node).__name__}'
-        method = getattr(self, method_name, self.no_visit_method)
-        return method(node, symbol_table)
+        self.program_counter = 0
+        while self.program_counter < len(lines):
+            line_num = self.program_counter + 1
+            line = lines[self.program_counter].strip()
+            self.program_counter += 1
 
-    def no_visit_method(self, node, symbol_table):
-        raise Exception(f'No visit_{type(node).__name__} method defined')
+            if not line or line.startswith('#') or line.startswith("function"):
+                continue
 
-    def visit_SetVariableNode(self, node, symbol_table):
-        var_name = node.identifier_token['value']
-        # Visit the value node to get its actual value before setting
-        value = self.visit(node.value_node, symbol_table)
-        symbol_table.set(var_name, value)
+            parts = line.split()
+            command = parts[0]
+            try:
+                if command in self.functions: self.execute_function_call(command)
+                elif command == "say": self.execute_say(parts[1:])
+                elif command == "set": self.execute_set(line)
+                elif command == "if":
+                    condition_parts = parts[1:-1]
+                    self.block_stack.append(('if',))
+                    if not self.evaluate_condition(condition_parts):
+                        self.program_counter = self.find_matching_block_end(lines, self.program_counter)
+                elif command == "else": self.program_counter = self.find_matching_block_end(lines, self.program_counter)
+                elif command == "repeat": self.execute_repeat(parts[1:])
+                elif command == "swap": self.execute_swap(parts[1:]) # Our new command
+                elif command == "end": self.execute_end()
+                else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
+            except Exception as e: print(f"Veer Runtime Error (Line {line_num}): {e}")
 
-    def visit_SayNode(self, node, symbol_table):
-        output = [str(self.visit(element_node, symbol_table)) for element_node in node.nodes_to_say]
+    def execute_swap(self, args):
+        """Executes 'swap var1 and var2'"""
+        if len(args) != 3 or args[1] != "and":
+            raise SyntaxError("Invalid swap syntax. Expected: swap <var1> and <var2>")
+        var1_name, var2_name = args[0], args[2]
+        if var1_name not in self.variables or var2_name not in self.variables:
+            raise NameError("One or both variables in swap do not exist.")
+        # The magic of swapping in one line of Python
+        self.variables[var1_name], self.variables[var2_name] = self.variables[var2_name], self.variables[var1_name]
+
+    # All other methods are unchanged from v0.5
+    def pre_scan_for_functions(self, lines):
+        for i, line in enumerate(lines):
+            if line.strip().startswith("function "): self.functions[line.strip().split()[1]] = i + 1
+    def execute_function_call(self, func_name):
+        self.call_stack.append(self.program_counter)
+        self.program_counter = self.functions[func_name]
+    def execute_end(self):
+        if not self.block_stack and self.call_stack:
+            self.program_counter = self.call_stack.pop()
+            return
+        if not self.block_stack: raise SyntaxError("Unexpected 'end'")
+        block_type, *data = self.block_stack[-1]
+        if block_type == 'if': self.block_stack.pop()
+        elif block_type == 'repeat':
+            loop_start_pc, count, iterator_var = data
+            self.variables[iterator_var] += 1
+            if self.variables[iterator_var] <= count: self.program_counter = loop_start_pc
+            else: self.block_stack.pop()
+    def get_value(self, expression):
+        expression = expression.strip()
+        if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
+        if expression.isdigit() or (expression.startswith('-') and expression[1:].isdigit()): return int(expression)
+        if '[' in expression and expression.endswith(']'):
+            match = re.match(r"(\w+)\[(.*)\]", expression)
+            if match:
+                list_name, index_expr = match.groups()
+                if list_name in self.variables and isinstance(self.variables[list_name], list):
+                    index = self.get_value(index_expr)
+                    return self.variables[list_name][index - 1]
+                else: raise NameError(f"'{list_name}' is not a list or does not exist.")
+        if expression in self.variables: return self.variables[expression]
+        raise NameError(f"Unknown variable or expression '{expression}'")
+    def execute_set(self, line):
+        parts = line.split(' to ', 1)
+        var_name_part = parts[0].split()
+        if '[' in var_name_part[1]:
+            match = re.match(r"(\w+)\[(.*)\]", var_name_part[1])
+            list_name, index_expr = match.groups()
+            index = self.get_value(index_expr)
+            value = self.get_value(parts[1])
+            self.variables[list_name][index - 1] = value
+            return
+        var_name = var_name_part[1]
+        value_str = parts[1].strip()
+        if value_str.startswith('[') and value_str.endswith(']'):
+            list_contents = value_str[1:-1].split(',')
+            self.variables[var_name] = [self.get_value(item) for item in list_contents]
+        elif value_str.startswith('ask '): self.execute_ask(f"set {var_name} to {value_str}")
+        else: self.variables[var_name] = self.get_value(value_str)
+    def execute_say(self, args):
+        full_arg_str = " ".join(args)
+        expressions = re.split(r',\s*(?![^\[\]]*\])', full_arg_str)
+        output = [str(self.get_value(expr)) for expr in expressions]
         print(" ".join(output))
+    def evaluate_condition(self, parts):
+        lhs_expr, op, rhs_expr = parts[0], parts[1], " ".join(parts[2:])
+        val1 = self.get_value(lhs_expr); val2 = self.get_value(rhs_expr)
+        if isinstance(val1, str) or isinstance(val2, str): val1, val2 = str(val1), str(val2)
+        else: val1, val2 = int(val1), int(val2)
+        if op == "is": return val1 == val2
+        if op == "isnot": return val1 != val2
+        if op == ">": return val1 > val2
+        if op == "<": return val1 < val2
+        if op == ">=": return val1 >= val2
+        if op == "<=": return val1 <= val2
+        raise SyntaxError(f"Unknown comparison operator '{op}'")
+    def execute_ask(self, line):
+        parts = line.split(); var_name = parts[1]; prompt = " ".join(parts[4:])[1:-1]
+        user_input = input(prompt + " "); self.variables[var_name] = self.get_value(user_input)
+    def execute_repeat(self, args):
+        count = self.get_value(args[0]); iterator_var = args[3]
+        self.variables[iterator_var] = 1; loop_start_pc = self.program_counter
+        self.block_stack.append(('repeat', loop_start_pc, count, iterator_var))
+    def find_matching_block_end(self, lines, start_index):
+        nesting_level = 1
+        for i in range(start_index, len(lines)):
+            line = lines[i].strip()
+            if line.startswith("if") or line.startswith("repeat") or line.startswith("function"): nesting_level += 1
+            elif line == "end":
+                nesting_level -= 1
+                if nesting_level == 0: return i
+            elif line == "else" and nesting_level == 1: return i
+        return len(lines)
 
-    def visit_NumberNode(self, node, symbol_table):
-        return node.token['value']
-    def visit_StringNode(self, node, symbol_table):
-        return node.token['value']
-    def visit_VariableAccessNode(self, node, symbol_table):
-        var_name = node.token['value']
-        return symbol_table.get(var_name)
-
-# --- 7. The Main "run" function ---
-def run(program_code):
-    symbol_table = SymbolTable()
-    interpreter = Interpreter()
-    
-    # Filter out empty lines and comments
-    lines = [line for line in program_code.split('\n') if line.strip() and not line.strip().startswith('#')]
-
-    for line in lines:
-        lexer = Lexer(line)
-        tokens = lexer.run()
-        if not tokens: continue
-        
-        parser = Parser(tokens)
-        ast = parser.parse()
-        if not ast: continue
-        
-        interpreter.visit(ast, symbol_table)
-
-# --- Main Entry Point: Read and execute a file ---
 if __name__ == "__main__":
-    # Check if a filename was provided on the command line
-    if len(sys.argv) != 2:
-        print("Usage: python veer_interpreter.py <filename.mewar>")
-    else:
-        filename = sys.argv[1]
-        try:
-            with open(filename, 'r') as f:
-                code = f.read()
-                run(code)
-        except FileNotFoundError:
-            print(f"Error: File '{filename}' not found.")
+    final_program = """
+# Final Test for Mewar v1.0
+say "--- Variable Swap Test ---"
 
+set cup1 to "Milk"
+set cup2 to "Water"
 
+say "Before swap: Cup 1 has", cup1, "and Cup 2 has", cup2
+
+# Use our new command!
+swap cup1 and cup2
+
+say "After swap:  Cup 1 has", cup1, "and Cup 2 has", cup2
+"""
+    print(">>> Starting Veer Interpreter v1.0...")
+    print("-" * 20)
+    interpreter = VeerInterpreter()
+    interpreter.run(final_program)
+    print("-" * 20)
+    print(">>> Mewar v1.0 Program finished.")
