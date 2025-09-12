@@ -96,6 +96,14 @@ class VeerInterpreter:
                 elif command == "if":
                     condition_parts = line.split()[1:-1]; self.block_stack.append(('if',))
                     if not self.evaluate_condition(condition_parts): self.program_counter = self.find_matching_block_end(lines, self.program_counter)
+                # --- NEW: 'while' Loop ---
+                elif command == "while":
+                    loop_start_pc = self.program_counter - 1
+                    condition_parts = line.split()[1:-1]
+                    if self.evaluate_condition(condition_parts):
+                        self.block_stack.append(('while', loop_start_pc))
+                    else:
+                        self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "else": self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "repeat": self.execute_repeat(line.split()[1:])
                 elif command == "end": self.execute_end()
@@ -148,11 +156,33 @@ class VeerInterpreter:
             loop_start_pc, count, iterator_var = data; self.variables[iterator_var] += 1
             if self.variables[iterator_var] <= count: self.program_counter = loop_start_pc
             else: self.block_stack.pop()
+        # --- NEW: 'while' loop logic ---
+        elif block_type == 'while':
+            loop_start_pc, = data
+            self.program_counter = loop_start_pc # Jump back to the while line
+    
+    # --- UPDATED: To handle 'and' and 'or' operators ---
     def evaluate_condition(self, parts):
+        # Convert the parts list to a string to process
+        condition_str = " ".join(parts)
+        
+        # Handle 'or' (lowest precedence)
+        if " or " in condition_str:
+            sub_conditions = condition_str.split(" or ", 1)
+            return self.evaluate_condition(sub_conditions[0].split()) or self.evaluate_condition(sub_conditions[1].split())
+        
+        # Handle 'and' (higher precedence)
+        if " and " in condition_str:
+            sub_conditions = condition_str.split(" and ", 1)
+            return self.evaluate_condition(sub_conditions[0].split()) and self.evaluate_condition(sub_conditions[1].split())
+
+        # Base case: a single comparison
         lhs_expr, op, rhs_expr = parts[0], parts[1], " ".join(parts[2:])
         val1 = self.get_value(lhs_expr); val2 = self.get_value(rhs_expr)
+        
         if isinstance(val1, str) or isinstance(val2, str): val1, val2 = str(val1), str(val2)
         else: val1, val2 = float(val1), float(val2)
+            
         if op == "is": return val1 == val2
         if op == "isnot": return val1 != val2
         if op == ">": return val1 > val2
@@ -160,6 +190,7 @@ class VeerInterpreter:
         if op == ">=": return val1 >= val2
         if op == "<=": return val1 <= val2
         raise SyntaxError(f"Unknown comparison operator '{op}'")
+
     def execute_ask(self, line):
         target_expr = line.split(' to ', 1)[0].split()[1]; prompt = line.split('ask ', 1)[1][1:-1]
         user_input = input(prompt + " ")
@@ -176,7 +207,9 @@ class VeerInterpreter:
         nesting_level = 1
         for i in range(start_index, len(lines)):
             line = lines[i].strip()
-            if line.startswith("if") or line.startswith("repeat") or line.startswith("function"): nesting_level += 1
+            # Added 'while' to the list of block starters
+            if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while"): 
+                nesting_level += 1
             elif line == "end":
                 nesting_level -= 1
                 if nesting_level == 0: return i
@@ -193,3 +226,4 @@ if __name__ == "__main__":
             interpreter = VeerInterpreter(); interpreter.run(mewar_code)
         except FileNotFoundError: print(f"Error: The file '{file_path}' was not found.")
         except Exception as e: print(f"An unexpected error occurred: {e}")
+
