@@ -16,7 +16,17 @@ class VeerInterpreter:
         if expression == '""' or expression == "''":
             return ""
 
-        # --- Arithmetic Logic (Unchanged) ---
+        # --- NEW: List Creation Logic ---
+        # If the expression is a list literal like [1, "hello", 5]
+        if expression.startswith('[') and expression.endswith(']'):
+            list_contents = expression[1:-1].strip()
+            if not list_contents:
+                return [] # Return an empty list if contents are empty
+            # Split by comma, but ignore commas inside quotes
+            parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)
+            return [self.get_value(part) for part in parts]
+
+        # --- UPDATED: Arithmetic Logic with String Concatenation ---
         operators = ['+', '-', '*', '/']
         for op in operators:
             # A simple check to avoid splitting negative numbers
@@ -24,6 +34,11 @@ class VeerInterpreter:
                 parts = expression.rsplit(op, 1)
                 val1 = self.get_value(parts[0])
                 val2 = self.get_value(parts[1])
+
+                # If '+' is used with a string, perform concatenation
+                if op == '+' and (isinstance(val1, str) or isinstance(val2, str)):
+                    return str(val1) + str(val2)
+                
                 try:
                     num1 = float(val1); num2 = float(val2)
                 except (ValueError, TypeError):
@@ -76,6 +91,8 @@ class VeerInterpreter:
                 elif command == "say": self.execute_say(args_str)
                 elif command == "set": self.execute_set(line)
                 elif command == "swap": self.execute_swap(line.split()[1:])
+                # --- NEW: Add 'append' command to the interpreter ---
+                elif command == "append": self.execute_append(args_str)
                 elif command == "if":
                     condition_parts = line.split()[1:-1]; self.block_stack.append(('if',))
                     if not self.evaluate_condition(condition_parts): self.program_counter = self.find_matching_block_end(lines, self.program_counter)
@@ -84,6 +101,24 @@ class VeerInterpreter:
                 elif command == "end": self.execute_end()
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
             except Exception as e: print(f"Veer Runtime Error (Line {line_num}): {e}")
+
+    # --- NEW: Command to add an item to a list ---
+    def execute_append(self, args_str):
+        parts = args_str.split(' to ', 1)
+        if len(parts) != 2:
+            raise SyntaxError("Invalid append syntax. Use 'append <value> to <list_name>'")
+        
+        value_expr = parts[0].strip()
+        list_name = parts[1].strip()
+
+        if list_name not in self.variables:
+            raise NameError(f"Cannot append to '{list_name}' because it does not exist.")
+        if not isinstance(self.variables[list_name], list):
+            raise TypeError(f"Cannot append to '{list_name}' because it is not a list.")
+            
+        value_to_append = self.get_value(value_expr)
+        self.variables[list_name].append(value_to_append)
+
     def execute_set(self, line):
         parts = line.split(' to ', 1); target_expr = parts[0].split()[1]; value_str = parts[1].strip()
         if value_str.startswith('ask '): self.execute_ask(f"set {target_expr} to {value_str}")
@@ -158,4 +193,3 @@ if __name__ == "__main__":
             interpreter = VeerInterpreter(); interpreter.run(mewar_code)
         except FileNotFoundError: print(f"Error: The file '{file_path}' was not found.")
         except Exception as e: print(f"An unexpected error occurred: {e}")
-
