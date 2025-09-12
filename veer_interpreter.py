@@ -10,46 +10,35 @@ class VeerInterpreter:
         self.call_stack = []
 
     def get_value(self, expression):
-        """
-        UPGRADED: Can now evaluate simple arithmetic expressions.
-        The heart of the Mewar language's calculation ability.
-        """
         expression = expression.strip()
 
-        # --- NEW: Arithmetic Logic ---
-        # We process operators in a specific order for potential future expansion.
-        # For now, it finds the first operator.
+        # --- FIX PART 1: Make get_value robust to empty strings ---
+        if expression == '""' or expression == "''":
+            return ""
+
+        # --- Arithmetic Logic (Unchanged) ---
         operators = ['+', '-', '*', '/']
         for op in operators:
-            if op in expression:
-                parts = expression.split(op, 1)
-                # Recursively call get_value to resolve operands (which could be variables)
+            # A simple check to avoid splitting negative numbers
+            if op in expression and expression.rfind(op) > 0:
+                parts = expression.rsplit(op, 1)
                 val1 = self.get_value(parts[0])
                 val2 = self.get_value(parts[1])
-
-                # Ensure operands are numbers
                 try:
-                    num1 = float(val1)
-                    num2 = float(val2)
+                    num1 = float(val1); num2 = float(val2)
                 except (ValueError, TypeError):
                     raise ValueError(f"Cannot perform math on non-numeric value.")
-
-                # Perform the calculation
                 if op == '+': result = num1 + num2
                 elif op == '-': result = num1 - num2
                 elif op == '*': result = num1 * num2
                 elif op == '/':
                     if num2 == 0: raise ZeroDivisionError("Cannot divide by zero.")
                     result = num1 / num2
-                
-                # Return integer if the result is a whole number, else float
                 return int(result) if result == int(result) else result
 
-        # --- Existing Logic for non-math expressions ---
-        if expression == '""' or expression == "''": return ""
+        # --- Existing Logic (Unchanged) ---
         if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
         if expression.isdigit() or (expression.startswith('-') and expression[1:].isdigit()): return int(expression)
-        
         if '[' in expression and expression.endswith(']'):
             match = re.match(r"(\w+)\[(.*)\]", expression)
             if match:
@@ -57,35 +46,21 @@ class VeerInterpreter:
                 if list_name in self.variables and isinstance(self.variables[list_name], list):
                     index = self.get_value(index_expr); return self.variables[list_name][index - 1]
                 else: raise NameError(f"'{list_name}' is not a list or does not exist.")
-        
         if expression in self.variables: return self.variables[expression]
         raise NameError(f"Unknown variable or expression '{expression}'")
-
-    # --- `execute_set` now works with math automatically via `get_value` ---
-    def execute_set(self, line):
-        parts = line.split(' to ', 1)
-        var_name_part = parts[0].split()
-        target_expr = var_name_part[1]
-        value_str = parts[1].strip()
-
-        # The get_value function now handles the entire right side, including math
-        if value_str.startswith('ask '):
-             self.execute_ask(f"set {target_expr} to {value_str}")
-        else:
-             final_value = self.get_value(value_str)
-             self.set_value(target_expr, final_value)
     
-    def set_value(self, target_expr, value):
-        """Helper to set a value to either a simple variable or a list item."""
-        if '[' in target_expr:
-            match = re.match(r"(\w+)\[(.*)\]", target_expr)
-            list_name, index_expr = match.groups()
-            index = self.get_value(index_expr)
-            self.variables[list_name][index - 1] = value
-        else:
-            self.variables[target_expr] = value
-            
-    # The rest of the interpreter remains largely the same...
+    # --- FIX PART 2: Make execute_say smarter ---
+    def execute_say(self, args_str):
+        # If the arguments are empty (from 'say' or 'say ""'), print a newline and exit.
+        if not args_str or args_str == '""':
+            print()
+            return
+        
+        parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', args_str)
+        output = [str(self.get_value(part.strip())) for part in parts]
+        print(" ".join(output))
+
+    # The rest of the interpreter is unchanged...
     def run(self, code):
         lines = code.split('\n')
         self.pre_scan_for_functions(lines)
@@ -109,11 +84,16 @@ class VeerInterpreter:
                 elif command == "end": self.execute_end()
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
             except Exception as e: print(f"Veer Runtime Error (Line {line_num}): {e}")
-    def execute_say(self, args_str):
-        if not args_str: print(); return
-        parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', args_str)
-        output = [str(self.get_value(part.strip())) for part in parts]
-        print(" ".join(output))
+    def execute_set(self, line):
+        parts = line.split(' to ', 1); target_expr = parts[0].split()[1]; value_str = parts[1].strip()
+        if value_str.startswith('ask '): self.execute_ask(f"set {target_expr} to {value_str}")
+        else: self.set_value(target_expr, self.get_value(value_str))
+    def set_value(self, target_expr, value):
+        if '[' in target_expr:
+            match = re.match(r"(\w+)\[(.*)\]", target_expr)
+            list_name, index_expr = match.groups()
+            self.variables[list_name][self.get_value(index_expr) - 1] = value
+        else: self.variables[target_expr] = value
     def execute_swap(self, args):
         if len(args) != 3 or args[1] != "and": raise SyntaxError("Invalid swap syntax.")
         var1_name, var2_name = args[0], args[2]
@@ -146,16 +126,12 @@ class VeerInterpreter:
         if op == "<=": return val1 <= val2
         raise SyntaxError(f"Unknown comparison operator '{op}'")
     def execute_ask(self, line):
-        # We need to parse the target variable correctly from the 'set ... to ask' line
-        target_expr = line.split(' to ', 1)[0].split()[1]
-        prompt = line.split('ask ', 1)[1][1:-1]
+        target_expr = line.split(' to ', 1)[0].split()[1]; prompt = line.split('ask ', 1)[1][1:-1]
         user_input = input(prompt + " ")
-        # Convert to number if possible
         try:
             numeric_input = float(user_input)
             final_input = int(numeric_input) if numeric_input == int(numeric_input) else numeric_input
-        except ValueError:
-            final_input = user_input
+        except ValueError: final_input = user_input
         self.set_value(target_expr, final_input)
     def execute_repeat(self, args):
         count = self.get_value(args[0]); iterator_var = args[3]
@@ -174,7 +150,7 @@ class VeerInterpreter:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter v1.2"); print("Usage: python veer.py <filename.mewar>")
+        print("Veer Interpreter v1.3"); print("Usage: python veer.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
