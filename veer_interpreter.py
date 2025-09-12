@@ -6,6 +6,7 @@ class VeerInterpreter:
         self.variables = {}
         self.program_counter = 0
         self.block_stack = []
+        # --- NEW: These are now fully implemented ---
         self.functions = {}
         self.call_stack = []
 
@@ -54,52 +55,65 @@ class VeerInterpreter:
         print(" ".join(output))
 
     def run(self, code):
-        lines = code.split('\n'); self.pre_scan_for_functions(lines); self.program_counter = 0
+        lines = code.split('\n')
+        # --- NEW: Scan for function definitions before running ---
+        self.pre_scan_for_functions(lines)
+        self.program_counter = 0
+
         while self.program_counter < len(lines):
-            line_num = self.program_counter + 1; line = lines[self.program_counter].strip(); self.program_counter += 1
+            line_num = self.program_counter + 1
+            line = lines[self.program_counter].strip()
+            
+            # --- NEW: Skip the body of functions during the main run ---
+            if line.startswith("function "):
+                self.program_counter = self.find_matching_block_end(lines, self.program_counter + 1)
+                self.program_counter += 1
+                continue
+
+            self.program_counter += 1
             if not line or line.startswith('#'): continue
+            
             command_match = re.match(r"(\w+)", line)
             if not command_match: continue
-            command = command_match.group(1); args_str = line[len(command):].strip()
+            
+            command = command_match.group(1)
+            args_str = line[len(command):].strip()
+
             try:
-                if command in self.functions: self.execute_function_call(command)
+                # --- NEW: Check if the command is a function call ---
+                if command in self.functions:
+                    self.execute_function_call(command)
                 elif command == "say": self.execute_say(args_str)
+                # ... other commands ...
                 elif command == "set": self.execute_set(line)
                 elif command == "swap": self.execute_swap(line.split()[1:])
                 elif command == "append": self.execute_append(args_str)
-                # --- FIX: Overhauled if/else logic ---
                 elif command == "if":
                     condition_parts = line.split()[1:-1]
                     condition_result = self.evaluate_condition(condition_parts)
-                    # Store the result of the 'if' so 'else' knows what to do
                     self.block_stack.append(('if', condition_result))
                     if not condition_result:
-                        # If condition is false, jump to the 'else' or 'end'
                         self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "else":
                     if self.block_stack and self.block_stack[-1][0] == 'if':
-                        # Check if the preceding 'if' was true
                         if_was_true = self.block_stack[-1][1]
                         if if_was_true:
-                            # If it was true, we must skip this 'else' block
                             self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                     else:
                         raise SyntaxError("'else' without a preceding 'if'")
                 elif command == "end":
-                    # Let the 'execute_end' method handle loops and functions
-                    # but handle the 'if' block pop here.
                     if self.block_stack and self.block_stack[-1][0] == 'if':
                         self.block_stack.pop()
                     else:
                         self.execute_end()
-                # --- End of fix ---
                 elif command == "while":
                     loop_start_pc = self.program_counter - 1; condition_parts = line.split()[1:-1]
                     if self.evaluate_condition(condition_parts): self.block_stack.append(('while', loop_start_pc))
                     else: self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "repeat": self.execute_repeat(line.split()[1:])
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
-            except Exception as e: print(f"Veer Runtime Error (Line {line_num}): {e}")
+            except Exception as e:
+                print(f"Veer Runtime Error (Line {line_num}): {e}")
 
     def execute_append(self, args_str):
         parts = args_str.split(' to ', 1)
@@ -113,33 +127,60 @@ class VeerInterpreter:
         parts = line.split(' to ', 1); target_expr = parts[0].split()[1]; value_str = parts[1].strip()
         if value_str.startswith('ask ''): self.execute_ask(f"set {target_expr} to {value_str}")
         else: self.set_value(target_expr, self.get_value(value_str))
+
     def set_value(self, target_expr, value):
         if '[' in target_expr:
             match = re.match(r"(\w+)\[(.*)\]", target_expr)
             list_name, index_expr = match.groups()
             self.variables[list_name][self.get_value(index_expr) - 1] = value
         else: self.variables[target_expr] = value
+
     def execute_swap(self, args):
         if len(args) != 3 or args[1] != "and": raise SyntaxError("Invalid swap syntax.")
         var1_name, var2_name = args[0], args[2]
         if var1_name not in self.variables or var2_name not in self.variables: raise NameError("Variable in swap not found.")
         self.variables[var1_name], self.variables[var2_name] = self.variables[var2_name], self.variables[var1_name]
+
+    # --- NEW: Implemented function logic ---
     def pre_scan_for_functions(self, lines):
+        """Finds all function definitions and stores their start line."""
         for i, line in enumerate(lines):
-            if line.strip().startswith("function "): self.functions[line.strip().split()[1]] = i + 1
+            line = line.strip()
+            if line.startswith("function "):
+                parts = line.split()
+                if len(parts) >= 2:
+                    func_name = parts[1]
+                    self.functions[func_name] = i + 1 # Store the line number *after* the definition
+
     def execute_function_call(self, func_name):
-        self.call_stack.append(self.program_counter); self.program_counter = self.functions[func_name]
+        """Jumps the interpreter to the start of a function."""
+        if func_name in self.functions:
+            self.call_stack.append(self.program_counter) # Save where we were
+            self.program_counter = self.functions[func_name] # Jump to the function
+        else:
+            raise NameError(f"Function '{func_name}' is not defined.")
+
     def execute_end(self):
-        # --- FIX: Removed 'if' logic, as it's now handled in the run loop ---
-        if not self.block_stack and self.call_stack: self.program_counter = self.call_stack.pop(); return
-        if not self.block_stack: raise SyntaxError("Unexpected 'end'")
+        # --- UPDATED: 'end' now handles returning from functions ---
+        # If we are in a function, return to where we were called from.
+        if self.call_stack:
+            self.program_counter = self.call_stack.pop()
+            return
+
+        if not self.block_stack:
+            raise SyntaxError("Unexpected 'end' outside of any block or function.")
+        
         block_type, *data = self.block_stack[-1]
         if block_type == 'repeat':
-            loop_start_pc, count, iterator_var = data; self.variables[iterator_var] += 1
-            if self.variables[iterator_var] <= count: self.program_counter = loop_start_pc
-            else: self.block_stack.pop()
+            loop_start_pc, count, iterator_var = data
+            self.variables[iterator_var] += 1
+            if self.variables[iterator_var] <= count:
+                self.program_counter = loop_start_pc
+            else:
+                self.block_stack.pop()
         elif block_type == 'while':
-            loop_start_pc, = data; self.program_counter = loop_start_pc
+            loop_start_pc, = data
+            self.program_counter = loop_start_pc
     
     def evaluate_condition(self, parts):
         condition_str = " ".join(parts)
@@ -169,10 +210,12 @@ class VeerInterpreter:
             final_input = int(numeric_input) if numeric_input == int(numeric_input) else numeric_input
         except ValueError: final_input = user_input
         self.set_value(target_expr, final_input)
+
     def execute_repeat(self, args):
         count = self.get_value(args[0]); iterator_var = args[3]
         self.variables[iterator_var] = 1; loop_start_pc = self.program_counter
         self.block_stack.append(('repeat', loop_start_pc, count, iterator_var))
+
     def find_matching_block_end(self, lines, start_index):
         nesting_level = 1
         for i in range(start_index, len(lines)):
