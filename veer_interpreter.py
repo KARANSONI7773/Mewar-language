@@ -11,47 +11,30 @@ class VeerInterpreter:
 
     def get_value(self, expression):
         expression = expression.strip()
-
-        # --- FIX PART 1: Make get_value robust to empty strings ---
-        if expression == '""' or expression == "''":
-            return ""
-
-        # --- NEW: List Creation Logic ---
-        # If the expression is a list literal like [1, "hello", 5]
+        if expression == '""' or expression == "''": return ""
         if expression.startswith('[') and expression.endswith(']'):
             list_contents = expression[1:-1].strip()
-            if not list_contents:
-                return [] # Return an empty list if contents are empty
-            # Split by comma, but ignore commas inside quotes
+            if not list_contents: return []
             parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)
             return [self.get_value(part) for part in parts]
-
-        # --- UPDATED: Arithmetic Logic with String Concatenation ---
-        operators = ['+', '-', '*', '/']
+        operators = ['+', '-', '*', '/', '%']
         for op in operators:
-            # A simple check to avoid splitting negative numbers
             if op in expression and expression.rfind(op) > 0:
                 parts = expression.rsplit(op, 1)
-                val1 = self.get_value(parts[0])
-                val2 = self.get_value(parts[1])
-
-                # If '+' is used with a string, perform concatenation
-                if op == '+' and (isinstance(val1, str) or isinstance(val2, str)):
-                    return str(val1) + str(val2)
-                
-                try:
-                    num1 = float(val1); num2 = float(val2)
-                except (ValueError, TypeError):
-                    raise ValueError(f"Cannot perform math on non-numeric value.")
+                val1, val2 = self.get_value(parts[0]), self.get_value(parts[1])
+                if op == '+' and (isinstance(val1, str) or isinstance(val2, str)): return str(val1) + str(val2)
+                try: num1, num2 = float(val1), float(val2)
+                except (ValueError, TypeError): raise ValueError(f"Cannot perform math on non-numeric value.")
                 if op == '+': result = num1 + num2
                 elif op == '-': result = num1 - num2
                 elif op == '*': result = num1 * num2
                 elif op == '/':
                     if num2 == 0: raise ZeroDivisionError("Cannot divide by zero.")
                     result = num1 / num2
+                elif op == '%':
+                    if num2 == 0: raise ZeroDivisionError("Cannot perform modulo by zero.")
+                    result = num1 % num2
                 return int(result) if result == int(result) else result
-
-        # --- Existing Logic (Unchanged) ---
         if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
         if expression.isdigit() or (expression.startswith('-') and expression[1:].isdigit()): return int(expression)
         if '[' in expression and expression.endswith(']'):
@@ -64,22 +47,14 @@ class VeerInterpreter:
         if expression in self.variables: return self.variables[expression]
         raise NameError(f"Unknown variable or expression '{expression}'")
     
-    # --- FIX PART 2: Make execute_say smarter ---
     def execute_say(self, args_str):
-        # If the arguments are empty (from 'say' or 'say ""'), print a newline and exit.
-        if not args_str or args_str == '""':
-            print()
-            return
-        
+        if not args_str or args_str == '""': print(); return
         parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', args_str)
         output = [str(self.get_value(part.strip())) for part in parts]
         print(" ".join(output))
 
-    # The rest of the interpreter is unchanged...
     def run(self, code):
-        lines = code.split('\n')
-        self.pre_scan_for_functions(lines)
-        self.program_counter = 0
+        lines = code.split('\n'); self.pre_scan_for_functions(lines); self.program_counter = 0
         while self.program_counter < len(lines):
             line_num = self.program_counter + 1; line = lines[self.program_counter].strip(); self.program_counter += 1
             if not line or line.startswith('#'): continue
@@ -91,45 +66,52 @@ class VeerInterpreter:
                 elif command == "say": self.execute_say(args_str)
                 elif command == "set": self.execute_set(line)
                 elif command == "swap": self.execute_swap(line.split()[1:])
-                # --- NEW: Add 'append' command to the interpreter ---
                 elif command == "append": self.execute_append(args_str)
+                # --- FIX: Overhauled if/else logic ---
                 elif command == "if":
-                    condition_parts = line.split()[1:-1]; self.block_stack.append(('if',))
-                    if not self.evaluate_condition(condition_parts): self.program_counter = self.find_matching_block_end(lines, self.program_counter)
-                # --- NEW: 'while' Loop ---
-                elif command == "while":
-                    loop_start_pc = self.program_counter - 1
                     condition_parts = line.split()[1:-1]
-                    if self.evaluate_condition(condition_parts):
-                        self.block_stack.append(('while', loop_start_pc))
-                    else:
+                    condition_result = self.evaluate_condition(condition_parts)
+                    # Store the result of the 'if' so 'else' knows what to do
+                    self.block_stack.append(('if', condition_result))
+                    if not condition_result:
+                        # If condition is false, jump to the 'else' or 'end'
                         self.program_counter = self.find_matching_block_end(lines, self.program_counter)
-                elif command == "else": self.program_counter = self.find_matching_block_end(lines, self.program_counter)
+                elif command == "else":
+                    if self.block_stack and self.block_stack[-1][0] == 'if':
+                        # Check if the preceding 'if' was true
+                        if_was_true = self.block_stack[-1][1]
+                        if if_was_true:
+                            # If it was true, we must skip this 'else' block
+                            self.program_counter = self.find_matching_block_end(lines, self.program_counter)
+                    else:
+                        raise SyntaxError("'else' without a preceding 'if'")
+                elif command == "end":
+                    # Let the 'execute_end' method handle loops and functions
+                    # but handle the 'if' block pop here.
+                    if self.block_stack and self.block_stack[-1][0] == 'if':
+                        self.block_stack.pop()
+                    else:
+                        self.execute_end()
+                # --- End of fix ---
+                elif command == "while":
+                    loop_start_pc = self.program_counter - 1; condition_parts = line.split()[1:-1]
+                    if self.evaluate_condition(condition_parts): self.block_stack.append(('while', loop_start_pc))
+                    else: self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "repeat": self.execute_repeat(line.split()[1:])
-                elif command == "end": self.execute_end()
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
             except Exception as e: print(f"Veer Runtime Error (Line {line_num}): {e}")
 
-    # --- NEW: Command to add an item to a list ---
     def execute_append(self, args_str):
         parts = args_str.split(' to ', 1)
-        if len(parts) != 2:
-            raise SyntaxError("Invalid append syntax. Use 'append <value> to <list_name>'")
-        
-        value_expr = parts[0].strip()
-        list_name = parts[1].strip()
-
-        if list_name not in self.variables:
-            raise NameError(f"Cannot append to '{list_name}' because it does not exist.")
-        if not isinstance(self.variables[list_name], list):
-            raise TypeError(f"Cannot append to '{list_name}' because it is not a list.")
-            
-        value_to_append = self.get_value(value_expr)
-        self.variables[list_name].append(value_to_append)
+        if len(parts) != 2: raise SyntaxError("Invalid append syntax. Use 'append <value> to <list_name>'")
+        value_expr = parts[0].strip(); list_name = parts[1].strip()
+        if list_name not in self.variables: raise NameError(f"Cannot append to '{list_name}' because it does not exist.")
+        if not isinstance(self.variables[list_name], list): raise TypeError(f"Cannot append to '{list_name}' because it is not a list.")
+        self.variables[list_name].append(self.get_value(value_expr))
 
     def execute_set(self, line):
         parts = line.split(' to ', 1); target_expr = parts[0].split()[1]; value_str = parts[1].strip()
-        if value_str.startswith('ask '): self.execute_ask(f"set {target_expr} to {value_str}")
+        if value_str.startswith('ask ''): self.execute_ask(f"set {target_expr} to {value_str}")
         else: self.set_value(target_expr, self.get_value(value_str))
     def set_value(self, target_expr, value):
         if '[' in target_expr:
@@ -148,41 +130,29 @@ class VeerInterpreter:
     def execute_function_call(self, func_name):
         self.call_stack.append(self.program_counter); self.program_counter = self.functions[func_name]
     def execute_end(self):
+        # --- FIX: Removed 'if' logic, as it's now handled in the run loop ---
         if not self.block_stack and self.call_stack: self.program_counter = self.call_stack.pop(); return
         if not self.block_stack: raise SyntaxError("Unexpected 'end'")
         block_type, *data = self.block_stack[-1]
-        if block_type == 'if': self.block_stack.pop()
-        elif block_type == 'repeat':
+        if block_type == 'repeat':
             loop_start_pc, count, iterator_var = data; self.variables[iterator_var] += 1
             if self.variables[iterator_var] <= count: self.program_counter = loop_start_pc
             else: self.block_stack.pop()
-        # --- NEW: 'while' loop logic ---
         elif block_type == 'while':
-            loop_start_pc, = data
-            self.program_counter = loop_start_pc # Jump back to the while line
+            loop_start_pc, = data; self.program_counter = loop_start_pc
     
-    # --- UPDATED: To handle 'and' and 'or' operators ---
     def evaluate_condition(self, parts):
-        # Convert the parts list to a string to process
         condition_str = " ".join(parts)
-        
-        # Handle 'or' (lowest precedence)
         if " or " in condition_str:
             sub_conditions = condition_str.split(" or ", 1)
             return self.evaluate_condition(sub_conditions[0].split()) or self.evaluate_condition(sub_conditions[1].split())
-        
-        # Handle 'and' (higher precedence)
         if " and " in condition_str:
             sub_conditions = condition_str.split(" and ", 1)
             return self.evaluate_condition(sub_conditions[0].split()) and self.evaluate_condition(sub_conditions[1].split())
-
-        # Base case: a single comparison
         lhs_expr, op, rhs_expr = parts[0], parts[1], " ".join(parts[2:])
         val1 = self.get_value(lhs_expr); val2 = self.get_value(rhs_expr)
-        
         if isinstance(val1, str) or isinstance(val2, str): val1, val2 = str(val1), str(val2)
         else: val1, val2 = float(val1), float(val2)
-            
         if op == "is": return val1 == val2
         if op == "isnot": return val1 != val2
         if op == ">": return val1 > val2
@@ -207,7 +177,6 @@ class VeerInterpreter:
         nesting_level = 1
         for i in range(start_index, len(lines)):
             line = lines[i].strip()
-            # Added 'while' to the list of block starters
             if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while"): 
                 nesting_level += 1
             elif line == "end":
