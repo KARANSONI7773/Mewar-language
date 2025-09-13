@@ -17,7 +17,6 @@ class VeerInterpreter:
         raise NameError(f"Variable '{name}' is not defined.")
 
     def set_variable(self, name, value):
-        # Handle list item assignment
         match = re.match(r"(\w+)\[(.*)\]", name)
         if match:
             list_name, index_expr = match.groups()
@@ -27,10 +26,15 @@ class VeerInterpreter:
             index = int(self.get_value(index_expr))
             if not 1 <= index <= len(list_val):
                 raise IndexError(f"Index {index} is out of bounds for list '{list_name}'.")
-            list_val[index - 1] = value # Use 1-based indexing for Mewar
+            list_val[index - 1] = value
         else:
-            # Set variable in the current (most local) scope
+            # Set variable in the current (most local) scope that already contains it, or global scope.
+            for scope in reversed(self.scopes):
+                if name in scope:
+                    scope[name] = value
+                    return
             self.scopes[-1][name] = value
+
 
     def get_value(self, expression):
         expression = expression.strip()
@@ -40,7 +44,6 @@ class VeerInterpreter:
             if not list_contents: return []
             return [self.get_value(part) for part in re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)]
         
-        # List Indexing
         match = re.match(r"(\w+)\[(.*)\]", expression)
         if match:
             list_name, index_expr = match.groups()
@@ -52,7 +55,6 @@ class VeerInterpreter:
                 return list_val[index - 1]
             else: raise TypeError(f"'{list_name}' is not a list.")
         
-        # Math Evaluation
         try:
             math_expr = re.sub(r'[a-zA-Z_][a-zA-Z0-9_]*', lambda m: str(self.get_variable(m.group(0))), expression)
             if re.fullmatch(r'[\d\s()+\-*/%.]+', math_expr):
@@ -60,7 +62,6 @@ class VeerInterpreter:
         except Exception:
             pass
 
-        # Single variable or number
         try: return int(expression)
         except ValueError:
             try: return float(expression)
@@ -74,7 +75,7 @@ class VeerInterpreter:
 
         while self.program_counter < len(self.lines):
             line_num = self.program_counter + 1
-            line = self.lines[self.program_counter].strip()
+            line = self.lines[self.program_counter].split('#')[0].trim()
 
             if line.startswith("function "):
                 self.program_counter = self.find_matching_block_end(self.program_counter + 1, find_else=False)
@@ -82,7 +83,7 @@ class VeerInterpreter:
                 continue
 
             self.program_counter += 1
-            if not line or line.startswith('#'): continue
+            if not line: continue
             
             try:
                 self.execute_line(line)
@@ -155,7 +156,7 @@ class VeerInterpreter:
     
     def execute_for(self, args_str):
         parts = args_str.split()
-        iterator_var, list_name = parts[0], parts[2]
+        iterator_var, list_name = parts[1], parts[3]
         iterable = self.get_variable(list_name)
         if not isinstance(iterable, list): raise TypeError(f"Cannot iterate over '{list_name}'.")
 
@@ -182,8 +183,11 @@ class VeerInterpreter:
 
     def execute_end(self):
         if self.call_stack:
+             stack_frame = self.call_stack.pop()
+             if stack_frame.get('target_variable') and self._return_value is None:
+                 self.set_variable(stack_frame['target_variable'], None)
              self.scopes.pop()
-             self.program_counter = self.call_stack.pop()
+             self.program_counter = stack_frame['pc']
              return
 
         if not self.scopes or len(self.scopes) <= 1:
@@ -218,13 +222,12 @@ class VeerInterpreter:
             parts = condition_str.split(" and ", 1)
             return self.evaluate_condition(parts[0]) and self.evaluate_condition(parts[1])
 
-        operators = ["==", "!=", ">=", "<=", ">", "<", " isnot ", " is "]
+        operators = ["==", "!=", ">=", "<=", ">", "<", "isnot", "is"]
         op_found = None
         for op in operators:
-            # Use word boundaries for 'is' and 'isnot' to avoid matching parts of variable names
-            search_op = f' {op.strip()} ' if op.strip() in ['is', 'isnot'] else op
+            search_op = f' {op} '
             if search_op in condition_str:
-                op_found = op.strip()
+                op_found = op
                 break
         
         if not op_found: raise SyntaxError(f"Unknown operator in condition: '{condition_str}'")
@@ -250,7 +253,7 @@ class VeerInterpreter:
                     params = [p.strip() for p in params_str.split(',')] if params_str else []
                     self.functions[func_name] = {'start': i + 1, 'params': params}
 
-    def execute_call(self, args_str):
+    def execute_call(self, args_str, target_variable=None):
         match = re.match(r"(\w+)(?:\s+with\s+(.*?))?$", args_str)
         if not match: raise SyntaxError(f"Invalid function call syntax: '{args_str}'")
         
@@ -268,21 +271,28 @@ class VeerInterpreter:
             new_scope[param_name] = arg_value
         
         self.scopes.append(new_scope)
-        self.call_stack.append(self.program_counter)
+        self.call_stack.append({'pc': self.program_counter, 'target_variable': target_variable})
         self.program_counter = func_info['start']
 
     def execute_return(self, args_str):
         if not self.call_stack: raise SyntaxError("'return' used outside of a function.")
-        self._return_value = self.get_value(args_str) if args_str else None
         
+        return_value = self.get_value(args_str) if args_str else None
+        stack_frame = self.call_stack.pop()
+        
+        self.program_counter = stack_frame['pc']
         self.scopes.pop()
-        self.program_counter = self.call_stack.pop()
+
+        if stack_frame['target_variable']:
+            self.set_variable(stack_frame['target_variable'], return_value)
+        else:
+            self._return_value = return_value
     
     def find_matching_block_end(self, start_index, find_else=False):
         level = 1
         i = start_index
         while i < len(self.lines):
-            line = self.lines[i].strip()
+            line = self.lines[i].strip().split('#')[0].trim()
             if line.startswith(("if ", "function ", "while ", "for ", "repeat ")): level += 1
             elif find_else and line == "else" and level == 1: return i
             elif line == "end":
@@ -293,7 +303,7 @@ class VeerInterpreter:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter (Synced with Royal Playground)"); print("Usage: python veer_interpreter.py <filename.mewar>")
+        print("Veer Interpreter (Definitive Edition)"); print("Usage: python veer_interpreter.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
