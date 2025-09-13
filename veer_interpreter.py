@@ -17,13 +17,25 @@ class VeerInterpreter:
         raise NameError(f"Variable '{name}' is not defined.")
 
     def set_variable(self, name, value):
-        # Set variable in the current (most local) scope
-        self.scopes[-1][name] = value
+        # Handle list item assignment
+        match = re.match(r"(\w+)\[(.*)\]", name)
+        if match:
+            list_name, index_expr = match.groups()
+            list_val = self.get_variable(list_name)
+            if not isinstance(list_val, list):
+                raise TypeError(f"'{list_name}' is not a list and cannot be indexed.")
+            index = int(self.get_value(index_expr))
+            if not 1 <= index <= len(list_val):
+                raise IndexError(f"Index {index} is out of bounds for list '{list_name}'.")
+            list_val[index - 1] = value # Use 1-based indexing for Mewar
+        else:
+            # Set variable in the current (most local) scope
+            self.scopes[-1][name] = value
 
     def get_value(self, expression):
         expression = expression.strip()
-        if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
-        if expression.startswith('[') and expression.endswith(']'):
+        if expression.startswith('"') and expression.endsWith('"'): return expression[1:-1]
+        if expression.startswith('[') and expression.endsWith(']'):
             list_contents = expression[1:-1].strip()
             if not list_contents: return []
             return [self.get_value(part) for part in re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)]
@@ -35,7 +47,9 @@ class VeerInterpreter:
             list_val = self.get_variable(list_name)
             if isinstance(list_val, list):
                 index = int(self.get_value(index_expr))
-                return list_val[index - 1] # 1-based indexing for Mewar
+                if not 1 <= index <= len(list_val):
+                     raise IndexError(f"Index {index} is out of bounds for list '{list_name}'.")
+                return list_val[index - 1]
             else: raise TypeError(f"'{list_name}' is not a list.")
         
         # Math Evaluation
@@ -101,7 +115,7 @@ class VeerInterpreter:
         print(output)
 
     def execute_set(self, args_str):
-        target, value_expr = [p.strip() for p in args_str.split(' to ', 1)]
+        target, value_expr = re.split(r'\s+to\s+', args_str, 1)
         if value_expr.startswith("call "):
             self.execute_call(value_expr[5:])
             value = self._return_value
@@ -109,7 +123,9 @@ class VeerInterpreter:
         elif value_expr.startswith("ask "):
             prompt = value_expr.split('"')[1]
             value = input(prompt + " ")
-            try: value = float(value)
+            try: 
+                num_val = float(value)
+                value = int(num_val) if num_val == int(num_val) else num_val
             except ValueError: pass
         else:
             value = self.get_value(value_expr)
@@ -153,8 +169,9 @@ class VeerInterpreter:
     def execute_repeat(self, args_str):
         count = int(self.get_value(args_str.split()[0]))
         loop_start_pc = self.program_counter
-        self.scopes.append({'type': 'repeat', 'start': loop_start_pc, 'count': count, 'iteration': 1})
-        if count <= 0:
+        if count > 0:
+            self.scopes.append({'type': 'repeat', 'start': loop_start_pc, 'count': count, 'iteration': 1})
+        else:
             self.program_counter = self.find_matching_block_end(loop_start_pc, find_else=False)
 
     def execute_append(self, args_str):
@@ -169,7 +186,7 @@ class VeerInterpreter:
              self.program_counter = self.call_stack.pop()
              return
 
-        if not self.scopes or len(self.scopes) <= 1: # Cannot pop global scope
+        if not self.scopes or len(self.scopes) <= 1:
             raise SyntaxError("Unexpected 'end' statement.")
 
         last_block = self.scopes[-1]
@@ -201,17 +218,27 @@ class VeerInterpreter:
             parts = condition_str.split(" and ", 1)
             return self.evaluate_condition(parts[0]) and self.evaluate_condition(parts[1])
 
-        parts = condition_str.split()
+        operators = ["==", "!=", ">=", "<=", ">", "<", " isnot ", " is "]
+        op_found = None
+        for op in operators:
+            # Use word boundaries for 'is' and 'isnot' to avoid matching parts of variable names
+            search_op = f' {op.strip()} ' if op.strip() in ['is', 'isnot'] else op
+            if search_op in condition_str:
+                op_found = op.strip()
+                break
+        
+        if not op_found: raise SyntaxError(f"Unknown operator in condition: '{condition_str}'")
+
+        parts = condition_str.split(f' {op_found} ', 1)
         lhs = self.get_value(parts[0])
-        op = parts[1]
-        rhs = self.get_value(parts[2])
-        if op in ("is", "=="): return lhs == rhs
-        if op in ("isnot", "!="): return lhs != rhs
-        if op == ">": return lhs > rhs
-        if op == "<": return lhs < rhs
-        if op == ">=": return lhs >= rhs
-        if op == "<=": return lhs <= rhs
-        raise SyntaxError(f"Unknown operator '{op}' in condition.")
+        rhs = self.get_value(parts[1])
+        
+        if op_found in ("is", "=="): return lhs == rhs
+        if op_found in ("isnot", "!="): return lhs != rhs
+        if op_found == ">": return float(lhs) > float(rhs)
+        if op_found == "<": return float(lhs) < float(rhs)
+        if op_found == ">=": return float(lhs) >= float(rhs)
+        if op_found == "<=": return float(lhs) <= float(rhs)
 
     def pre_scan_for_functions(self, lines):
         for i, line in enumerate(lines):
@@ -231,7 +258,7 @@ class VeerInterpreter:
         if func_name not in self.functions: raise NameError(f"Function '{func_name}' is not defined.")
 
         func_info = self.functions[func_name]
-        arg_values = [self.get_value(p) for p in args_expr_str.split(',')] if args_expr_str else []
+        arg_values = [self.get_value(p) for p in re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', args_expr_str)] if args_expr_str else []
 
         if len(arg_values) != len(func_info['params']):
             raise TypeError(f"Function '{func_name}' expects {len(func_info['params'])} arguments, but got {len(arg_values)}.")
@@ -266,7 +293,7 @@ class VeerInterpreter:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter v1.6 (Complete)"); print("Usage: python veer_interpreter.py <filename.mewar>")
+        print("Veer Interpreter (Synced with Royal Playground)"); print("Usage: python veer_interpreter.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
