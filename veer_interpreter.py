@@ -6,7 +6,6 @@ class VeerInterpreter:
         self.variables = {}
         self.program_counter = 0
         self.block_stack = []
-        # --- NEW: These are now fully implemented ---
         self.functions = {}
         self.call_stack = []
 
@@ -56,7 +55,6 @@ class VeerInterpreter:
 
     def run(self, code):
         lines = code.split('\n')
-        # --- NEW: Scan for function definitions before running ---
         self.pre_scan_for_functions(lines)
         self.program_counter = 0
 
@@ -64,7 +62,6 @@ class VeerInterpreter:
             line_num = self.program_counter + 1
             line = lines[self.program_counter].strip()
             
-            # --- NEW: Skip the body of functions during the main run ---
             if line.startswith("function "):
                 self.program_counter = self.find_matching_block_end(lines, self.program_counter + 1)
                 self.program_counter += 1
@@ -80,11 +77,9 @@ class VeerInterpreter:
             args_str = line[len(command):].strip()
 
             try:
-                # --- NEW: Check if the command is a function call ---
                 if command in self.functions:
                     self.execute_function_call(command)
                 elif command == "say": self.execute_say(args_str)
-                # ... other commands ...
                 elif command == "set": self.execute_set(line)
                 elif command == "swap": self.execute_swap(line.split()[1:])
                 elif command == "append": self.execute_append(args_str)
@@ -111,6 +106,8 @@ class VeerInterpreter:
                     if self.evaluate_condition(condition_parts): self.block_stack.append(('while', loop_start_pc))
                     else: self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "repeat": self.execute_repeat(line.split()[1:])
+                # --- NEW: Added 'for' loop command ---
+                elif command == "for": self.execute_for(line)
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
             except Exception as e:
                 print(f"Veer Runtime Error (Line {line_num}): {e}")
@@ -141,28 +138,23 @@ class VeerInterpreter:
         if var1_name not in self.variables or var2_name not in self.variables: raise NameError("Variable in swap not found.")
         self.variables[var1_name], self.variables[var2_name] = self.variables[var2_name], self.variables[var1_name]
 
-    # --- NEW: Implemented function logic ---
     def pre_scan_for_functions(self, lines):
-        """Finds all function definitions and stores their start line."""
         for i, line in enumerate(lines):
             line = line.strip()
             if line.startswith("function "):
                 parts = line.split()
                 if len(parts) >= 2:
                     func_name = parts[1]
-                    self.functions[func_name] = i + 1 # Store the line number *after* the definition
+                    self.functions[func_name] = i + 1
 
     def execute_function_call(self, func_name):
-        """Jumps the interpreter to the start of a function."""
         if func_name in self.functions:
-            self.call_stack.append(self.program_counter) # Save where we were
-            self.program_counter = self.functions[func_name] # Jump to the function
+            self.call_stack.append(self.program_counter)
+            self.program_counter = self.functions[func_name]
         else:
             raise NameError(f"Function '{func_name}' is not defined.")
 
     def execute_end(self):
-        # --- UPDATED: 'end' now handles returning from functions ---
-        # If we are in a function, return to where we were called from.
         if self.call_stack:
             self.program_counter = self.call_stack.pop()
             return
@@ -181,7 +173,41 @@ class VeerInterpreter:
         elif block_type == 'while':
             loop_start_pc, = data
             self.program_counter = loop_start_pc
+        # --- NEW: Handle the end of a 'for' loop ---
+        elif block_type == 'for':
+            loop_start_pc, iterator_var, iterable, index = data
+            index += 1
+            if index < len(iterable):
+                self.variables[iterator_var] = iterable[index]
+                self.block_stack[-1] = ('for', loop_start_pc, iterator_var, iterable, index)
+                self.program_counter = loop_start_pc
+            else:
+                self.block_stack.pop()
     
+    # --- NEW: The 'for' loop execution logic ---
+    def execute_for(self, line):
+        parts = line.split()
+        if len(parts) != 5 or parts[2] != 'in' or parts[4] != 'then':
+            raise SyntaxError("Invalid 'for' loop syntax. Use 'for <variable> in <list> then'")
+        
+        iterator_var = parts[1]
+        list_name = parts[3]
+        
+        iterable = self.get_value(list_name)
+        if not isinstance(iterable, list):
+            raise TypeError(f"Cannot iterate over '{list_name}' because it is not a list.")
+
+        loop_start_pc = self.program_counter
+
+        if not iterable:
+            self.program_counter = self.find_matching_block_end(self.lines, self.program_counter)
+            return
+
+        index = 0
+        self.variables[iterator_var] = iterable[index]
+        self.block_stack.append(('for', loop_start_pc, iterator_var, iterable, index))
+
+
     def evaluate_condition(self, parts):
         condition_str = " ".join(parts)
         if " or " in condition_str:
@@ -220,7 +246,8 @@ class VeerInterpreter:
         nesting_level = 1
         for i in range(start_index, len(lines)):
             line = lines[i].strip()
-            if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while"): 
+            # --- NEW: Added 'for' to the list of block-starting keywords ---
+            if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while") or line.startswith("for"): 
                 nesting_level += 1
             elif line == "end":
                 nesting_level -= 1
@@ -230,7 +257,7 @@ class VeerInterpreter:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter v1.3"); print("Usage: python veer.py <filename.mewar>")
+        print("Veer Interpreter v1.4"); print("Usage: python veer_interpreter.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
