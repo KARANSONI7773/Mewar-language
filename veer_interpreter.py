@@ -106,7 +106,6 @@ class VeerInterpreter:
                     if self.evaluate_condition(condition_parts): self.block_stack.append(('while', loop_start_pc))
                     else: self.program_counter = self.find_matching_block_end(lines, self.program_counter)
                 elif command == "repeat": self.execute_repeat(line.split()[1:])
-                # --- NEW: Added 'for' loop command ---
                 elif command == "for": self.execute_for(line)
                 else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
             except Exception as e:
@@ -120,17 +119,37 @@ class VeerInterpreter:
         if not isinstance(self.variables[list_name], list): raise TypeError(f"Cannot append to '{list_name}' because it is not a list.")
         self.variables[list_name].append(self.get_value(value_expr))
 
+    # --- UPDATED: 'set' now handles 'ask' ---
     def execute_set(self, line):
-        parts = line.split(' to ', 1); target_expr = parts[0].split()[1]; value_str = parts[1].strip()
-        if value_str.startswith('ask ''): self.execute_ask(f"set {target_expr} to {value_str}")
-        else: self.set_value(target_expr, self.get_value(value_str))
+        parts = line.split(' to ', 1)
+        target_expr = parts[0].split()[1]
+        value_str = parts[1].strip()
+        
+        if value_str.startswith('ask '):
+            prompt = value_str.split('"')[1] if '"' in value_str else ""
+            self.execute_ask(target_expr, prompt)
+        else:
+            self.set_value(target_expr, self.get_value(value_str))
+
+    # --- NEW: Function to handle user input ---
+    def execute_ask(self, target_expr, prompt):
+        user_input = input(prompt + " ")
+        try:
+            # Try to convert input to a number
+            numeric_input = float(user_input)
+            final_input = int(numeric_input) if numeric_input == int(numeric_input) else numeric_input
+        except ValueError:
+            # Otherwise, treat it as a string
+            final_input = user_input
+        self.set_value(target_expr, final_input)
 
     def set_value(self, target_expr, value):
         if '[' in target_expr:
             match = re.match(r"(\w+)\[(.*)\]", target_expr)
             list_name, index_expr = match.groups()
             self.variables[list_name][self.get_value(index_expr) - 1] = value
-        else: self.variables[target_expr] = value
+        else:
+            self.variables[target_expr] = value
 
     def execute_swap(self, args):
         if len(args) != 3 or args[1] != "and": raise SyntaxError("Invalid swap syntax.")
@@ -173,7 +192,6 @@ class VeerInterpreter:
         elif block_type == 'while':
             loop_start_pc, = data
             self.program_counter = loop_start_pc
-        # --- NEW: Handle the end of a 'for' loop ---
         elif block_type == 'for':
             loop_start_pc, iterator_var, iterable, index = data
             index += 1
@@ -184,7 +202,6 @@ class VeerInterpreter:
             else:
                 self.block_stack.pop()
     
-    # --- NEW: The 'for' loop execution logic ---
     def execute_for(self, line):
         parts = line.split()
         if len(parts) != 5 or parts[2] != 'in' or parts[4] != 'then':
@@ -228,15 +245,6 @@ class VeerInterpreter:
         if op == "<=": return val1 <= val2
         raise SyntaxError(f"Unknown comparison operator '{op}'")
 
-    def execute_ask(self, line):
-        target_expr = line.split(' to ', 1)[0].split()[1]; prompt = line.split('ask ', 1)[1][1:-1]
-        user_input = input(prompt + " ")
-        try:
-            numeric_input = float(user_input)
-            final_input = int(numeric_input) if numeric_input == int(numeric_input) else numeric_input
-        except ValueError: final_input = user_input
-        self.set_value(target_expr, final_input)
-
     def execute_repeat(self, args):
         count = self.get_value(args[0]); iterator_var = args[3]
         self.variables[iterator_var] = 1; loop_start_pc = self.program_counter
@@ -246,7 +254,6 @@ class VeerInterpreter:
         nesting_level = 1
         for i in range(start_index, len(lines)):
             line = lines[i].strip()
-            # --- NEW: Added 'for' to the list of block-starting keywords ---
             if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while") or line.startswith("for"): 
                 nesting_level += 1
             elif line == "end":
@@ -257,7 +264,7 @@ class VeerInterpreter:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter v1.4"); print("Usage: python veer_interpreter.py <filename.mewar>")
+        print("Veer Interpreter v1.5"); print("Usage: python veer_interpreter.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
