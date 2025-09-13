@@ -3,268 +3,270 @@ import re
 
 class VeerInterpreter:
     def __init__(self):
-        self.variables = {}
-        self.program_counter = 0
-        self.block_stack = []
+        self.scopes = [{}]  # Global scope
         self.functions = {}
+        self.lines = []
+        self.program_counter = 0
         self.call_stack = []
+        self._return_value = None
+
+    def get_variable(self, name):
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+        raise NameError(f"Variable '{name}' is not defined.")
+
+    def set_variable(self, name, value):
+        # Set variable in the current (most local) scope
+        self.scopes[-1][name] = value
 
     def get_value(self, expression):
         expression = expression.strip()
-        if expression == '""' or expression == "''": return ""
+        if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
         if expression.startswith('[') and expression.endswith(']'):
             list_contents = expression[1:-1].strip()
             if not list_contents: return []
-            parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)
-            return [self.get_value(part) for part in parts]
-        operators = ['+', '-', '*', '/', '%']
-        for op in operators:
-            if op in expression and expression.rfind(op) > 0:
-                parts = expression.rsplit(op, 1)
-                val1, val2 = self.get_value(parts[0]), self.get_value(parts[1])
-                if op == '+' and (isinstance(val1, str) or isinstance(val2, str)): return str(val1) + str(val2)
-                try: num1, num2 = float(val1), float(val2)
-                except (ValueError, TypeError): raise ValueError(f"Cannot perform math on non-numeric value.")
-                if op == '+': result = num1 + num2
-                elif op == '-': result = num1 - num2
-                elif op == '*': result = num1 * num2
-                elif op == '/':
-                    if num2 == 0: raise ZeroDivisionError("Cannot divide by zero.")
-                    result = num1 / num2
-                elif op == '%':
-                    if num2 == 0: raise ZeroDivisionError("Cannot perform modulo by zero.")
-                    result = num1 % num2
-                return int(result) if result == int(result) else result
-        if expression.startswith('"') and expression.endswith('"'): return expression[1:-1]
-        if expression.isdigit() or (expression.startswith('-') and expression[1:].isdigit()): return int(expression)
-        if '[' in expression and expression.endswith(']'):
-            match = re.match(r"(\w+)\[(.*)\]", expression)
-            if match:
-                list_name, index_expr = match.groups()
-                if list_name in self.variables and isinstance(self.variables[list_name], list):
-                    index = self.get_value(index_expr); return self.variables[list_name][index - 1]
-                else: raise NameError(f"'{list_name}' is not a list or does not exist.")
-        if expression in self.variables: return self.variables[expression]
-        raise NameError(f"Unknown variable or expression '{expression}'")
-    
-    def execute_say(self, args_str):
-        if not args_str or args_str == '""': print(); return
-        parts = re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', args_str)
-        output = [str(self.get_value(part.strip())) for part in parts]
-        print(" ".join(output))
+            return [self.get_value(part) for part in re.split(r',\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', list_contents)]
+        
+        # List Indexing
+        match = re.match(r"(\w+)\[(.*)\]", expression)
+        if match:
+            list_name, index_expr = match.groups()
+            list_val = self.get_variable(list_name)
+            if isinstance(list_val, list):
+                index = int(self.get_value(index_expr))
+                return list_val[index - 1] # 1-based indexing for Mewar
+            else: raise TypeError(f"'{list_name}' is not a list.")
+        
+        # Math Evaluation
+        try:
+            math_expr = re.sub(r'[a-zA-Z_][a-zA-Z0-9_]*', lambda m: str(self.get_variable(m.group(0))), expression)
+            if re.fullmatch(r'[\d\s()+\-*/%.]+', math_expr):
+                 return eval(math_expr, {'__builtins__': {}}, {})
+        except Exception:
+            pass
+
+        # Single variable or number
+        try: return int(expression)
+        except ValueError:
+            try: return float(expression)
+            except ValueError:
+                 return self.get_variable(expression)
 
     def run(self, code):
-        lines = code.split('\n')
-        self.pre_scan_for_functions(lines)
+        self.lines = code.split('\n')
+        self.pre_scan_for_functions(self.lines)
         self.program_counter = 0
 
-        while self.program_counter < len(lines):
+        while self.program_counter < len(self.lines):
             line_num = self.program_counter + 1
-            line = lines[self.program_counter].strip()
-            
+            line = self.lines[self.program_counter].strip()
+
             if line.startswith("function "):
-                self.program_counter = self.find_matching_block_end(lines, self.program_counter + 1)
+                self.program_counter = self.find_matching_block_end(self.program_counter + 1, find_else=False)
                 self.program_counter += 1
                 continue
 
             self.program_counter += 1
             if not line or line.startswith('#'): continue
             
-            command_match = re.match(r"(\w+)", line)
-            if not command_match: continue
-            
-            command = command_match.group(1)
-            args_str = line[len(command):].strip()
-
             try:
-                if command in self.functions:
-                    self.execute_function_call(command)
-                elif command == "say": self.execute_say(args_str)
-                elif command == "set": self.execute_set(line)
-                elif command == "swap": self.execute_swap(line.split()[1:])
-                elif command == "append": self.execute_append(args_str)
-                elif command == "if":
-                    condition_parts = line.split()[1:-1]
-                    condition_result = self.evaluate_condition(condition_parts)
-                    self.block_stack.append(('if', condition_result))
-                    if not condition_result:
-                        self.program_counter = self.find_matching_block_end(lines, self.program_counter)
-                elif command == "else":
-                    if self.block_stack and self.block_stack[-1][0] == 'if':
-                        if_was_true = self.block_stack[-1][1]
-                        if if_was_true:
-                            self.program_counter = self.find_matching_block_end(lines, self.program_counter)
-                    else:
-                        raise SyntaxError("'else' without a preceding 'if'")
-                elif command == "end":
-                    if self.block_stack and self.block_stack[-1][0] == 'if':
-                        self.block_stack.pop()
-                    else:
-                        self.execute_end()
-                elif command == "while":
-                    loop_start_pc = self.program_counter - 1; condition_parts = line.split()[1:-1]
-                    if self.evaluate_condition(condition_parts): self.block_stack.append(('while', loop_start_pc))
-                    else: self.program_counter = self.find_matching_block_end(lines, self.program_counter)
-                elif command == "repeat": self.execute_repeat(line.split()[1:])
-                elif command == "for": self.execute_for(line)
-                else: print(f"Veer Error (Line {line_num}): Unknown command '{command}'")
+                self.execute_line(line)
             except Exception as e:
                 print(f"Veer Runtime Error (Line {line_num}): {e}")
+                return
+
+    def execute_line(self, line):
+        parts = line.split()
+        command = parts[0]
+        args_str = line[len(command):].strip()
+
+        if command == "say": self.execute_say(args_str)
+        elif command == "set": self.execute_set(args_str)
+        elif command == "call": self.execute_call(args_str)
+        elif command == "return": self.execute_return(args_str)
+        elif command == "if": self.execute_if(args_str)
+        elif command == "else": self.execute_else()
+        elif command == "while": self.execute_while(args_str)
+        elif command == "for": self.execute_for(args_str)
+        elif command == "repeat": self.execute_repeat(args_str)
+        elif command == "end": self.execute_end()
+        elif command == "append": self.execute_append(args_str)
+        else:
+             raise SyntaxError(f"Unknown command '{command}'")
+
+    def execute_say(self, args_str):
+        parts = args_str.split('+')
+        output = "".join(str(self.get_value(p)) for p in parts)
+        print(output)
+
+    def execute_set(self, args_str):
+        target, value_expr = [p.strip() for p in args_str.split(' to ', 1)]
+        if value_expr.startswith("call "):
+            self.execute_call(value_expr[5:])
+            value = self._return_value
+            self._return_value = None
+        elif value_expr.startswith("ask "):
+            prompt = value_expr.split('"')[1]
+            value = input(prompt + " ")
+            try: value = float(value)
+            except ValueError: pass
+        else:
+            value = self.get_value(value_expr)
+        self.set_variable(target, value)
+
+    def execute_if(self, args_str):
+        condition_str = args_str.split(' then', 1)[0]
+        result = self.evaluate_condition(condition_str)
+        self.scopes.append({'type': 'if', 'result': result})
+        if not result:
+            self.program_counter = self.find_matching_block_end(self.program_counter, find_else=True)
+
+    def execute_else(self):
+        last_block = self.scopes[-1]
+        if last_block.get('type') == 'if' and last_block.get('result') is True:
+            self.program_counter = self.find_matching_block_end(self.program_counter, find_else=False)
+        elif last_block.get('type') != 'if':
+            raise SyntaxError("'else' without a preceding 'if'")
+
+    def execute_while(self, args_str):
+        loop_start_pc = self.program_counter - 1
+        condition_str = args_str.split(' then', 1)[0]
+        if self.evaluate_condition(condition_str):
+            self.scopes.append({'type': 'while', 'start': loop_start_pc})
+        else:
+            self.program_counter = self.find_matching_block_end(self.program_counter, find_else=False)
+    
+    def execute_for(self, args_str):
+        parts = args_str.split()
+        iterator_var, list_name = parts[0], parts[2]
+        iterable = self.get_variable(list_name)
+        if not isinstance(iterable, list): raise TypeError(f"Cannot iterate over '{list_name}'.")
+
+        loop_start_pc = self.program_counter
+        if iterable:
+            self.set_variable(iterator_var, iterable[0])
+            self.scopes.append({'type': 'for', 'start': loop_start_pc, 'iterator': iterator_var, 'list': iterable, 'index': 0})
+        else:
+            self.program_counter = self.find_matching_block_end(loop_start_pc, find_else=False)
+
+    def execute_repeat(self, args_str):
+        count = int(self.get_value(args_str.split()[0]))
+        loop_start_pc = self.program_counter
+        self.scopes.append({'type': 'repeat', 'start': loop_start_pc, 'count': count, 'iteration': 1})
+        if count <= 0:
+            self.program_counter = self.find_matching_block_end(loop_start_pc, find_else=False)
 
     def execute_append(self, args_str):
-        parts = args_str.split(' to ', 1)
-        if len(parts) != 2: raise SyntaxError("Invalid append syntax. Use 'append <value> to <list_name>'")
-        value_expr = parts[0].strip(); list_name = parts[1].strip()
-        if list_name not in self.variables: raise NameError(f"Cannot append to '{list_name}' because it does not exist.")
-        if not isinstance(self.variables[list_name], list): raise TypeError(f"Cannot append to '{list_name}' because it is not a list.")
-        self.variables[list_name].append(self.get_value(value_expr))
+        value_expr, list_name = [p.strip() for p in args_str.split(' to ', 1)]
+        list_val = self.get_variable(list_name)
+        if not isinstance(list_val, list): raise TypeError(f"Cannot append to '{list_name}'.")
+        list_val.append(self.get_value(value_expr))
 
-    # --- UPDATED: 'set' now handles 'ask' ---
-    def execute_set(self, line):
-        parts = line.split(' to ', 1)
-        target_expr = parts[0].split()[1]
-        value_str = parts[1].strip()
-        
-        if value_str.startswith('ask '):
-            prompt = value_str.split('"')[1] if '"' in value_str else ""
-            self.execute_ask(target_expr, prompt)
-        else:
-            self.set_value(target_expr, self.get_value(value_str))
+    def execute_end(self):
+        if self.call_stack:
+             self.scopes.pop()
+             self.program_counter = self.call_stack.pop()
+             return
 
-    # --- NEW: Function to handle user input ---
-    def execute_ask(self, target_expr, prompt):
-        user_input = input(prompt + " ")
-        try:
-            # Try to convert input to a number
-            numeric_input = float(user_input)
-            final_input = int(numeric_input) if numeric_input == int(numeric_input) else numeric_input
-        except ValueError:
-            # Otherwise, treat it as a string
-            final_input = user_input
-        self.set_value(target_expr, final_input)
+        if not self.scopes or len(self.scopes) <= 1: # Cannot pop global scope
+            raise SyntaxError("Unexpected 'end' statement.")
 
-    def set_value(self, target_expr, value):
-        if '[' in target_expr:
-            match = re.match(r"(\w+)\[(.*)\]", target_expr)
-            list_name, index_expr = match.groups()
-            self.variables[list_name][self.get_value(index_expr) - 1] = value
-        else:
-            self.variables[target_expr] = value
+        last_block = self.scopes[-1]
+        block_type = last_block.get('type')
 
-    def execute_swap(self, args):
-        if len(args) != 3 or args[1] != "and": raise SyntaxError("Invalid swap syntax.")
-        var1_name, var2_name = args[0], args[2]
-        if var1_name not in self.variables or var2_name not in self.variables: raise NameError("Variable in swap not found.")
-        self.variables[var1_name], self.variables[var2_name] = self.variables[var2_name], self.variables[var1_name]
+        if block_type == 'if':
+            self.scopes.pop()
+        elif block_type == 'while':
+            self.program_counter = last_block['start']
+        elif block_type == 'for':
+            last_block['index'] += 1
+            if last_block['index'] < len(last_block['list']):
+                self.set_variable(last_block['iterator'], last_block['list'][last_block['index']])
+                self.program_counter = last_block['start']
+            else:
+                self.scopes.pop()
+        elif block_type == 'repeat':
+            if last_block['iteration'] < last_block['count']:
+                last_block['iteration'] += 1
+                self.program_counter = last_block['start']
+            else:
+                self.scopes.pop()
+
+    def evaluate_condition(self, condition_str):
+        if " or " in condition_str:
+            parts = condition_str.split(" or ", 1)
+            return self.evaluate_condition(parts[0]) or self.evaluate_condition(parts[1])
+        if " and " in condition_str:
+            parts = condition_str.split(" and ", 1)
+            return self.evaluate_condition(parts[0]) and self.evaluate_condition(parts[1])
+
+        parts = condition_str.split()
+        lhs = self.get_value(parts[0])
+        op = parts[1]
+        rhs = self.get_value(parts[2])
+        if op in ("is", "=="): return lhs == rhs
+        if op in ("isnot", "!="): return lhs != rhs
+        if op == ">": return lhs > rhs
+        if op == "<": return lhs < rhs
+        if op == ">=": return lhs >= rhs
+        if op == "<=": return lhs <= rhs
+        raise SyntaxError(f"Unknown operator '{op}' in condition.")
 
     def pre_scan_for_functions(self, lines):
         for i, line in enumerate(lines):
             line = line.strip()
             if line.startswith("function "):
-                parts = line.split()
-                if len(parts) >= 2:
-                    func_name = parts[1]
-                    self.functions[func_name] = i + 1
+                match = re.match(r"function\s+(\w+)(?:\s+with\s+(.*?))?\s+then", line)
+                if match:
+                    func_name, params_str = match.groups()
+                    params = [p.strip() for p in params_str.split(',')] if params_str else []
+                    self.functions[func_name] = {'start': i + 1, 'params': params}
 
-    def execute_function_call(self, func_name):
-        if func_name in self.functions:
-            self.call_stack.append(self.program_counter)
-            self.program_counter = self.functions[func_name]
-        else:
-            raise NameError(f"Function '{func_name}' is not defined.")
-
-    def execute_end(self):
-        if self.call_stack:
-            self.program_counter = self.call_stack.pop()
-            return
-
-        if not self.block_stack:
-            raise SyntaxError("Unexpected 'end' outside of any block or function.")
+    def execute_call(self, args_str):
+        match = re.match(r"(\w+)(?:\s+with\s+(.*?))?$", args_str)
+        if not match: raise SyntaxError(f"Invalid function call syntax: '{args_str}'")
         
-        block_type, *data = self.block_stack[-1]
-        if block_type == 'repeat':
-            loop_start_pc, count, iterator_var = data
-            self.variables[iterator_var] += 1
-            if self.variables[iterator_var] <= count:
-                self.program_counter = loop_start_pc
-            else:
-                self.block_stack.pop()
-        elif block_type == 'while':
-            loop_start_pc, = data
-            self.program_counter = loop_start_pc
-        elif block_type == 'for':
-            loop_start_pc, iterator_var, iterable, index = data
-            index += 1
-            if index < len(iterable):
-                self.variables[iterator_var] = iterable[index]
-                self.block_stack[-1] = ('for', loop_start_pc, iterator_var, iterable, index)
-                self.program_counter = loop_start_pc
-            else:
-                self.block_stack.pop()
+        func_name, args_expr_str = match.groups()
+        if func_name not in self.functions: raise NameError(f"Function '{func_name}' is not defined.")
+
+        func_info = self.functions[func_name]
+        arg_values = [self.get_value(p) for p in args_expr_str.split(',')] if args_expr_str else []
+
+        if len(arg_values) != len(func_info['params']):
+            raise TypeError(f"Function '{func_name}' expects {len(func_info['params'])} arguments, but got {len(arg_values)}.")
+
+        new_scope = {}
+        for param_name, arg_value in zip(func_info['params'], arg_values):
+            new_scope[param_name] = arg_value
+        
+        self.scopes.append(new_scope)
+        self.call_stack.append(self.program_counter)
+        self.program_counter = func_info['start']
+
+    def execute_return(self, args_str):
+        if not self.call_stack: raise SyntaxError("'return' used outside of a function.")
+        self._return_value = self.get_value(args_str) if args_str else None
+        
+        self.scopes.pop()
+        self.program_counter = self.call_stack.pop()
     
-    def execute_for(self, line):
-        parts = line.split()
-        if len(parts) != 5 or parts[2] != 'in' or parts[4] != 'then':
-            raise SyntaxError("Invalid 'for' loop syntax. Use 'for <variable> in <list> then'")
-        
-        iterator_var = parts[1]
-        list_name = parts[3]
-        
-        iterable = self.get_value(list_name)
-        if not isinstance(iterable, list):
-            raise TypeError(f"Cannot iterate over '{list_name}' because it is not a list.")
-
-        loop_start_pc = self.program_counter
-
-        if not iterable:
-            self.program_counter = self.find_matching_block_end(self.lines, self.program_counter)
-            return
-
-        index = 0
-        self.variables[iterator_var] = iterable[index]
-        self.block_stack.append(('for', loop_start_pc, iterator_var, iterable, index))
-
-
-    def evaluate_condition(self, parts):
-        condition_str = " ".join(parts)
-        if " or " in condition_str:
-            sub_conditions = condition_str.split(" or ", 1)
-            return self.evaluate_condition(sub_conditions[0].split()) or self.evaluate_condition(sub_conditions[1].split())
-        if " and " in condition_str:
-            sub_conditions = condition_str.split(" and ", 1)
-            return self.evaluate_condition(sub_conditions[0].split()) and self.evaluate_condition(sub_conditions[1].split())
-        lhs_expr, op, rhs_expr = parts[0], parts[1], " ".join(parts[2:])
-        val1 = self.get_value(lhs_expr); val2 = self.get_value(rhs_expr)
-        if isinstance(val1, str) or isinstance(val2, str): val1, val2 = str(val1), str(val2)
-        else: val1, val2 = float(val1), float(val2)
-        if op == "is": return val1 == val2
-        if op == "isnot": return val1 != val2
-        if op == ">": return val1 > val2
-        if op == "<": return val1 < val2
-        if op == ">=": return val1 >= val2
-        if op == "<=": return val1 <= val2
-        raise SyntaxError(f"Unknown comparison operator '{op}'")
-
-    def execute_repeat(self, args):
-        count = self.get_value(args[0]); iterator_var = args[3]
-        self.variables[iterator_var] = 1; loop_start_pc = self.program_counter
-        self.block_stack.append(('repeat', loop_start_pc, count, iterator_var))
-
-    def find_matching_block_end(self, lines, start_index):
-        nesting_level = 1
-        for i in range(start_index, len(lines)):
-            line = lines[i].strip()
-            if line.startswith("if") or line.startswith("repeat") or line.startswith("function") or line.startswith("while") or line.startswith("for"): 
-                nesting_level += 1
+    def find_matching_block_end(self, start_index, find_else=False):
+        level = 1
+        i = start_index
+        while i < len(self.lines):
+            line = self.lines[i].strip()
+            if line.startswith(("if ", "function ", "while ", "for ", "repeat ")): level += 1
+            elif find_else and line == "else" and level == 1: return i
             elif line == "end":
-                nesting_level -= 1
-                if nesting_level == 0: return i
-            elif line == "else" and nesting_level == 1: return i
-        return len(lines)
+                level -= 1
+                if level == 0: return i
+            i += 1
+        return len(self.lines) - 1
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Veer Interpreter v1.5"); print("Usage: python veer_interpreter.py <filename.mewar>")
+        print("Veer Interpreter v1.6 (Complete)"); print("Usage: python veer_interpreter.py <filename.mewar>")
     else:
         file_path = sys.argv[1]
         try:
