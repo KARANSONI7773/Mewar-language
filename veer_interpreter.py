@@ -26,15 +26,14 @@ class VeerInterpreter:
             index = int(self.get_value(index_expr))
             if not 1 <= index <= len(list_val):
                 raise IndexError(f"Index {index} is out of bounds for list '{list_name}'.")
-            list_val[index - 1] = value
+            list_val[index - 1] = value # Use 1-based indexing for Mewar
         else:
-            # Set variable in the current (most local) scope that already contains it, or global scope.
+            # Set variable in the current (most local) scope that already contains it, or the current scope if new.
             for scope in reversed(self.scopes):
                 if name in scope:
                     scope[name] = value
                     return
             self.scopes[-1][name] = value
-
 
     def get_value(self, expression):
         expression = expression.strip()
@@ -56,11 +55,13 @@ class VeerInterpreter:
             else: raise TypeError(f"'{list_name}' is not a list.")
         
         try:
+            # Replace variable names with their values for evaluation
             math_expr = re.sub(r'[a-zA-Z_][a-zA-Z0-9_]*', lambda m: str(self.get_variable(m.group(0))), expression)
+            # Safe evaluation for math expressions
             if re.fullmatch(r'[\d\s()+\-*/%.]+', math_expr):
                  return eval(math_expr, {'__builtins__': {}}, {})
         except Exception:
-            pass
+            pass # Fallback if not a pure math expression
 
         try: return int(expression)
         except ValueError:
@@ -75,7 +76,7 @@ class VeerInterpreter:
 
         while self.program_counter < len(self.lines):
             line_num = self.program_counter + 1
-            line = self.lines[self.program_counter].split('#')[0].trim()
+            line = self.lines[self.program_counter].split('#')[0].strip()
 
             if line.startswith("function "):
                 self.program_counter = self.find_matching_block_end(self.program_counter + 1, find_else=False)
@@ -118,9 +119,7 @@ class VeerInterpreter:
     def execute_set(self, args_str):
         target, value_expr = re.split(r'\s+to\s+', args_str, 1)
         if value_expr.startswith("call "):
-            self.execute_call(value_expr[5:])
-            value = self._return_value
-            self._return_value = None
+            self.execute_call(value_expr[5:], target_variable=target)
         elif value_expr.startswith("ask "):
             prompt = value_expr.split('"')[1]
             value = input(prompt + " ")
@@ -128,9 +127,10 @@ class VeerInterpreter:
                 num_val = float(value)
                 value = int(num_val) if num_val == int(num_val) else num_val
             except ValueError: pass
+            self.set_variable(target, value)
         else:
             value = self.get_value(value_expr)
-        self.set_variable(target, value)
+            self.set_variable(target, value)
 
     def execute_if(self, args_str):
         condition_str = args_str.split(' then', 1)[0]
@@ -236,12 +236,18 @@ class VeerInterpreter:
         lhs = self.get_value(parts[0])
         rhs = self.get_value(parts[1])
         
+        # Coerce types for comparison if possible
+        try:
+            lhs, rhs = float(lhs), float(rhs)
+        except (ValueError, TypeError):
+            lhs, rhs = str(lhs), str(rhs)
+
         if op_found in ("is", "=="): return lhs == rhs
         if op_found in ("isnot", "!="): return lhs != rhs
-        if op_found == ">": return float(lhs) > float(rhs)
-        if op_found == "<": return float(lhs) < float(rhs)
-        if op_found == ">=": return float(lhs) >= float(rhs)
-        if op_found == "<=": return float(lhs) <= float(rhs)
+        if op_found == ">": return lhs > rhs
+        if op_found == "<": return lhs < rhs
+        if op_found == ">=": return lhs >= rhs
+        if op_found == "<=": return lhs <= rhs
 
     def pre_scan_for_functions(self, lines):
         for i, line in enumerate(lines):
@@ -292,7 +298,7 @@ class VeerInterpreter:
         level = 1
         i = start_index
         while i < len(self.lines):
-            line = self.lines[i].strip().split('#')[0].trim()
+            line = self.lines[i].strip().split('#')[0].strip()
             if line.startswith(("if ", "function ", "while ", "for ", "repeat ")): level += 1
             elif find_else and line == "else" and level == 1: return i
             elif line == "end":
